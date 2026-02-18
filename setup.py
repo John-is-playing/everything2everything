@@ -1,43 +1,57 @@
 from setuptools import setup, find_packages
+import os
+
+# 读取README.md内容作为长描述
+with open(os.path.join(os.path.dirname(__file__), 'README.md'), 'r', encoding='utf-8') as f:
+    long_description = f.read()
 
 setup(
-    name="everything2everything",
+    name="e2e-type-converter",
     version="1.0.0",
-    description="A Python package that can convert any standard Python type to a custom data type and vice versa",
-    long_description="""EveryThing to EveryThing (E2E) is a Python package that provides a custom data type E2EType, which can wrap any standard Python type. It allows you to convert between Python standard types and the custom E2EType seamlessly.
-
-Features:
-- Convert any Python standard type to E2EType
-- Convert E2EType back to original type
-- Type checking capabilities
-- Serialization support
-- Timestamp tracking
-
-Usage:
-from e2e import to_e2e, from_e2e, E2EType
-
-# Convert to E2EType
-value_e2e = to_e2e("Hello, World!")
-
-# Convert back to original type
-original_value = from_e2e(value_e2e)
-""",
+    description="Python类型转换兼容层，支持所有标准数据类型和第三方库类型之间的双向转换",
+    long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/user/everything2everything",
-    author="Your Name",
-    author_email="your.email@example.com",
-    license="MIT",
+    author="Trae AI",
+    author_email="trae@example.com",
+    url="https://github.com/trae-ai/everything2everything",
+    packages=find_packages(),
+    include_package_data=True,
     classifiers=[
-        "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.6",
         "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
-        "Programming Language :: Python :: 3.11",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: OS Independent",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Topic :: Utilities",
     ],
-    packages=find_packages(),
-    python_requires=">=3.6",
-    install_requires=[],
+    python_requires=">=3.7",
+    install_requires=[
+        # 核心功能无强制依赖，第三方库为可选
+    ],
+    extras_require={
+        "full": [
+            "numpy",
+            "cupy",
+            "scipy",
+            "pandas",
+            "torch",
+            "xarray",
+            "jax",
+            "tensorflow",
+        ],
+        "numpy": ["numpy"],
+        "pandas": ["pandas", "numpy"],
+        "torch": ["torch"],
+        "xarray": ["xarray", "numpy"],
+        "scientific": ["numpy", "scipy", "pandas"],
+    },
+    keywords="type converter, data type, python, numpy, torch, xarray, jax, tensorflow",
+    project_urls={
+        "Bug Tracker": "https://github.com/trae-ai/everything2everything/issues",
+        "Documentation": "https://github.com/trae-ai/everything2everything/wiki",
+        "Source Code": "https://github.com/trae-ai/everything2everything",
+    },
 )
