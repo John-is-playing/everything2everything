@@ -44,7 +44,7 @@ __all__ = [
     'e2e_tuple',
 ]
 
-__version__ = "1.0.0"
-__author__ = "Trae AI"
-__email__ = "trae@example.com"
+__version__ = "0.1.1"
+__author__ = "John-is-playing"
+__email__ = "b297209694@outlook.com"
 __license__ = "MIT"
