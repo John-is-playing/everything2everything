@@ -18,38 +18,88 @@ original_set = builtins.set
 original_tuple = builtins.tuple
 
 # 缓存装饰器，用于缓存转换结果
-def conversion_cache(func):
+def conversion_cache(maxsize=500):
     """缓存转换结果的装饰器
     
     Args:
-        func: 转换函数
+        maxsize: 缓存最大大小
         
     Returns:
-        装饰后的函数
+        装饰器函数
     """
-    # 创建一个简单的缓存字典
-    cache = {}
+    def decorator(func):
+        # 使用OrderedDict实现LRU缓存
+        from collections import OrderedDict
+        import sys
+        
+        cache = OrderedDict()
+        memory_threshold = 100 * 1024 * 1024  # 100MB内存阈值
+        
+        def _get_memory_usage():
+            """获取当前进程的内存使用情况
+            
+            Returns:
+                int: 内存使用量（字节）
+            """
+            try:
+                import psutil
+                return psutil.Process().memory_info().rss
+            except ImportError:
+                return 0
+        
+        def cached_func(*args, **kwargs):
+            try:
+                # 快速路径：无关键字参数
+                if not kwargs:
+                    key = args
+                else:
+                    # 有序关键字参数
+                    key = args + tuple(sorted(kwargs.items()))
+                
+                # 检查缓存
+                if key in cache:
+                    # 移动到最近使用
+                    cache.move_to_end(key)
+                    return cache[key]
+                
+                # 检查内存使用
+                memory_used = _get_memory_usage()
+                if memory_used > memory_threshold:
+                    # 内存使用超过阈值，清空部分缓存
+                    if len(cache) > maxsize // 2:
+                        # 移除一半的缓存项
+                        for _ in range(len(cache) // 2):
+                            cache.popitem(last=False)
+                
+                # 计算结果
+                result = func(*args, **kwargs)
+                
+                # 检查结果大小，避免缓存过大的结果
+                result_size = sys.getsizeof(result)
+                if result_size > 1024 * 1024:  # 超过1MB的结果不缓存
+                    return result
+                
+                # 更新缓存
+                cache[key] = result
+                
+                # 限制缓存大小
+                if len(cache) > maxsize:
+                    # 移除最久未使用的项
+                    cache.popitem(last=False)
+                
+                return result
+            except TypeError:
+                # 如果参数不可哈希，直接调用函数
+                return func(*args, **kwargs)
+        
+        # 保留原始函数的属性
+        cached_func.__name__ = func.__name__
+        cached_func.__doc__ = func.__doc__
+        cached_func.__module__ = func.__module__
+        
+        return cached_func
     
-    def cached_func(*args, **kwargs):
-        try:
-            # 尝试将参数转换为可哈希的键
-            key = args + tuple(sorted(kwargs.items()))
-            if key in cache:
-                return cache[key]
-            result = func(*args, **kwargs)
-            cache[key] = result
-            # 限制缓存大小
-            if len(cache) > 1000:
-                # 简单的缓存清理策略：移除一半的条目
-                keys = list(cache.keys())[:len(cache)//2]
-                for k in keys:
-                    del cache[k]
-            return result
-        except TypeError:
-            # 如果参数不可哈希，直接调用函数
-            return func(*args, **kwargs)
-    
-    return cached_func
+    return decorator
 
 class TypeConverter:
     """类型转换兼容层
@@ -571,7 +621,14 @@ class TypeConverter:
         Returns:
             bool: 如果是numpy数组返回True，否则返回False
         """
-        numpy = cls._get_numpy()
+        # 快速路径：先检查模块是否可用
+        if not cls._numpy_available:
+            if cls._numpy is None:
+                cls._get_numpy()
+            else:
+                return False
+        
+        numpy = cls._numpy
         return numpy is not None and isinstance(obj, numpy.ndarray)
     
     @classmethod
@@ -586,7 +643,14 @@ class TypeConverter:
         Returns:
             bool: 如果是cupy数组返回True，否则返回False
         """
-        cupy = cls._get_cupy()
+        # 快速路径：先检查模块是否可用
+        if not cls._cupy_available:
+            if cls._cupy is None:
+                cls._get_cupy()
+            else:
+                return False
+        
+        cupy = cls._cupy
         return cupy is not None and isinstance(obj, cupy.ndarray)
     
     @classmethod
@@ -601,7 +665,14 @@ class TypeConverter:
         Returns:
             bool: 如果是scipy稀疏矩阵返回True，否则返回False
         """
-        scipy = cls._get_scipy()
+        # 快速路径：先检查模块是否可用
+        if not cls._scipy_available:
+            if cls._scipy is None:
+                cls._get_scipy()
+            else:
+                return False
+        
+        scipy = cls._scipy
         return scipy is not None and scipy.sparse.issparse(obj)
     
     @classmethod
@@ -616,7 +687,14 @@ class TypeConverter:
         Returns:
             bool: 如果是pandas DataFrame返回True，否则返回False
         """
-        pandas = cls._get_pandas()
+        # 快速路径：先检查模块是否可用
+        if not cls._pandas_available:
+            if cls._pandas is None:
+                cls._get_pandas()
+            else:
+                return False
+        
+        pandas = cls._pandas
         return pandas is not None and isinstance(obj, pandas.DataFrame)
     
     @classmethod
@@ -631,7 +709,14 @@ class TypeConverter:
         Returns:
             bool: 如果是pandas Series返回True，否则返回False
         """
-        pandas = cls._get_pandas()
+        # 快速路径：先检查模块是否可用
+        if not cls._pandas_available:
+            if cls._pandas is None:
+                cls._get_pandas()
+            else:
+                return False
+        
+        pandas = cls._pandas
         return pandas is not None and isinstance(obj, pandas.Series)
     
     @classmethod
@@ -646,7 +731,14 @@ class TypeConverter:
         Returns:
             bool: 如果是torch Tensor返回True，否则返回False
         """
-        torch = cls._get_torch()
+        # 快速路径：先检查模块是否可用
+        if not cls._torch_available:
+            if cls._torch is None:
+                cls._get_torch()
+            else:
+                return False
+        
+        torch = cls._torch
         return torch is not None and isinstance(obj, torch.Tensor)
     
     @classmethod
@@ -661,7 +753,14 @@ class TypeConverter:
         Returns:
             bool: 如果是xarray DataArray返回True，否则返回False
         """
-        xarray = cls._get_xarray()
+        # 快速路径：先检查模块是否可用
+        if not cls._xarray_available:
+            if cls._xarray is None:
+                cls._get_xarray()
+            else:
+                return False
+        
+        xarray = cls._xarray
         return xarray is not None and isinstance(obj, xarray.DataArray)
     
     @classmethod
@@ -676,7 +775,14 @@ class TypeConverter:
         Returns:
             bool: 如果是xarray Dataset返回True，否则返回False
         """
-        xarray = cls._get_xarray()
+        # 快速路径：先检查模块是否可用
+        if not cls._xarray_available:
+            if cls._xarray is None:
+                cls._get_xarray()
+            else:
+                return False
+        
+        xarray = cls._xarray
         return xarray is not None and isinstance(obj, xarray.Dataset)
     
     @classmethod
@@ -691,7 +797,14 @@ class TypeConverter:
         Returns:
             bool: 如果是jax array返回True，否则返回False
         """
-        jax = cls._get_jax()
+        # 快速路径：先检查模块是否可用
+        if not cls._jax_available:
+            if cls._jax is None:
+                cls._get_jax()
+            else:
+                return False
+        
+        jax = cls._jax
         return jax is not None and isinstance(obj, jax.numpy.ndarray)
     
     @classmethod
@@ -706,18 +819,26 @@ class TypeConverter:
         Returns:
             bool: 如果是tensorflow Tensor返回True，否则返回False
         """
-        tensorflow = cls._get_tensorflow()
+        # 快速路径：先检查模块是否可用
+        if not cls._tensorflow_available:
+            if cls._tensorflow is None:
+                cls._get_tensorflow()
+            else:
+                return False
+        
+        tensorflow = cls._tensorflow
         return tensorflow is not None and isinstance(obj, tensorflow.Tensor)
     
     @staticmethod
-    @conversion_cache
-    def to_list(obj):
+    @conversion_cache(maxsize=500)
+    def to_list(obj, batch_size=None):
         """转换为list
         
         Convert object to list.
         
         Args:
             obj: 要转换的对象
+            batch_size: 批处理大小，用于大型数据集
             
         Returns:
             list: 转换后的列表
@@ -725,78 +846,128 @@ class TypeConverter:
         Raises:
             TypeError: 如果无法转换为列表
         """
+        # 最常见的类型 - 快速路径
         if isinstance(obj, list):
             return obj
-        elif obj is None:
+        
+        # 空值处理
+        if obj is None:
             return []
-        elif isinstance(obj, (str, bytes)):
-            return list(obj)
-        elif isinstance(obj, dict):
-            return list(obj.items())
-        elif isinstance(obj, (int, float, bool)):
+        
+        # 基本类型
+        if isinstance(obj, (int, float, bool)):
             return [obj]
-        elif isinstance(obj, (tuple, set)):
+        
+        # 字符串和字节 - 大型字符串优化
+        if isinstance(obj, (str, bytes)):
+            if len(obj) > 10000 and batch_size:
+                # 批处理大型字符串
+                result = []
+                for i in range(0, len(obj), batch_size):
+                    result.extend(list(obj[i:i+batch_size]))
+                return result
             return list(obj)
-        elif TypeConverter._is_numpy_array(obj):
+        
+        # 容器类型 - 大型容器优化
+        if isinstance(obj, (tuple, set)):
+            if len(obj) > 10000 and batch_size:
+                # 批处理大型容器
+                result = []
+                batch = []
+                for item in obj:
+                    batch.append(item)
+                    if len(batch) >= batch_size:
+                        result.extend(batch)
+                        batch = []
+                if batch:
+                    result.extend(batch)
+                return result
+            return list(obj)
+        
+        if isinstance(obj, dict):
+            if len(obj) > 10000 and batch_size:
+                # 批处理大型字典
+                result = []
+                batch = []
+                for item in obj.items():
+                    batch.append(item)
+                    if len(batch) >= batch_size:
+                        result.extend(batch)
+                        batch = []
+                if batch:
+                    result.extend(batch)
+                return result
+            return list(obj.items())
+        
+        # 第三方库类型 - 按使用频率排序
+        # NumPy 数组（最常用）
+        if TypeConverter._is_numpy_array(obj):
             result = obj.tolist()
-            # 处理0维数组（标量）
             if not isinstance(result, list):
                 return [result]
             return result
-        elif TypeConverter._is_cupy_array(obj):
+        
+        # Pandas 类型
+        if TypeConverter._is_pandas_series(obj):
+            return obj.tolist()
+        
+        if TypeConverter._is_pandas_dataframe(obj):
+            return [obj.columns.tolist()] + obj.values.tolist()
+        
+        # PyTorch 张量
+        if TypeConverter._is_torch_tensor(obj):
+            result = obj.tolist()
+            if not isinstance(result, list):
+                return [result]
+            return result
+        
+        # Xarray 类型
+        if TypeConverter._is_xarray_dataarray(obj):
+            result = obj.values.tolist()
+            if not isinstance(result, list):
+                return [result]
+            return result
+        
+        if TypeConverter._is_xarray_dataset(obj):
+            return [{var: obj[var].values.tolist() for var in obj.data_vars}]
+        
+        # CuPy 数组
+        if TypeConverter._is_cupy_array(obj):
             cupy = TypeConverter._get_cupy()
             result = cupy.asnumpy(obj).tolist()
-            # 处理0维数组（标量）
             if not isinstance(result, list):
                 return [result]
             return result
-        elif TypeConverter._is_scipy_sparse(obj):
+        
+        # SciPy 稀疏矩阵
+        if TypeConverter._is_scipy_sparse(obj):
             result = obj.toarray().tolist()
-            # 处理0维数组（标量）
             if not isinstance(result, list):
                 return [result]
             return result
-        elif TypeConverter._is_pandas_dataframe(obj):
-            # 转换为嵌套列表，包含列名
-            return [obj.columns.tolist()] + obj.values.tolist()
-        elif TypeConverter._is_pandas_series(obj):
-            # 转换为值列表
-            return obj.tolist()
-        elif TypeConverter._is_torch_tensor(obj):
+        
+        # JAX 数组
+        if TypeConverter._is_jax_array(obj):
             result = obj.tolist()
-            # 处理0维张量（标量）
             if not isinstance(result, list):
                 return [result]
             return result
-        elif TypeConverter._is_xarray_dataarray(obj):
-            result = obj.values.tolist()
-            # 处理0维数组（标量）
-            if not isinstance(result, list):
-                return [result]
-            return result
-        elif TypeConverter._is_xarray_dataset(obj):
-            # 转换为包含所有变量的字典列表
-            return [{var: obj[var].values.tolist() for var in obj.data_vars}]
-        elif TypeConverter._is_jax_array(obj):
-            result = obj.tolist()
-            # 处理0维数组（标量）
-            if not isinstance(result, list):
-                return [result]
-            return result
-        elif TypeConverter._is_tensorflow_tensor(obj):
+        
+        # TensorFlow 张量
+        if TypeConverter._is_tensorflow_tensor(obj):
             result = obj.numpy().tolist()
-            # 处理0维张量（标量）
             if not isinstance(result, list):
                 return [result]
             return result
-        else:
-            try:
-                return original_list(obj)
-            except (TypeError, ValueError):
-                raise TypeError(f"Cannot convert {type(obj).__name__} to list")
+        
+        # 其他类型 - 回退到原始list函数
+        try:
+            return original_list(obj)
+        except (TypeError, ValueError):
+            raise TypeError(f"Cannot convert {type(obj).__name__} to list")
     
     @staticmethod
-    @conversion_cache
+    @conversion_cache()
     def to_str(obj):
         """转换为str
         
@@ -811,45 +982,76 @@ class TypeConverter:
         Raises:
             TypeError: 如果无法转换为字符串
         """
+        # 最常见的类型 - 快速路径
         if isinstance(obj, str):
             return obj
-        elif obj is None:
+        
+        # 空值处理
+        if obj is None:
             return ""
-        elif isinstance(obj, bool):
-            return str(obj).lower()
-        elif isinstance(obj, (int, float, list, tuple, dict, set)):
+        
+        # 基本类型
+        if isinstance(obj, (int, float, bool)):
+            if isinstance(obj, bool):
+                return str(obj).lower()
             return original_str(obj)
-        elif isinstance(obj, bytes):
+        
+        # 字节类型
+        if isinstance(obj, bytes):
             return str(obj, encoding='utf-8', errors='replace')
-        elif TypeConverter._is_numpy_array(obj):
+        
+        # 容器类型
+        if isinstance(obj, (list, tuple, dict, set)):
+            return original_str(obj)
+        
+        # 第三方库类型 - 按使用频率排序
+        # NumPy 数组
+        if TypeConverter._is_numpy_array(obj):
             return str(obj.tolist())
-        elif TypeConverter._is_cupy_array(obj):
+        
+        # Pandas 类型
+        if TypeConverter._is_pandas_series(obj):
+            return str(obj.to_list())
+        
+        if TypeConverter._is_pandas_dataframe(obj):
+            return str(obj.to_dict('list'))
+        
+        # PyTorch 张量
+        if TypeConverter._is_torch_tensor(obj):
+            return str(obj.tolist())
+        
+        # Xarray 类型
+        if TypeConverter._is_xarray_dataarray(obj):
+            return str(obj.values.tolist())
+        
+        if TypeConverter._is_xarray_dataset(obj):
+            return str({var: obj[var].values.tolist() for var in obj.data_vars})
+        
+        # CuPy 数组
+        if TypeConverter._is_cupy_array(obj):
             cupy = TypeConverter._get_cupy()
             return str(cupy.asnumpy(obj).tolist())
-        elif TypeConverter._is_scipy_sparse(obj):
+        
+        # SciPy 稀疏矩阵
+        if TypeConverter._is_scipy_sparse(obj):
             return str(obj.toarray().tolist())
-        elif TypeConverter._is_pandas_dataframe(obj):
-            return str(obj.to_dict('list'))
-        elif TypeConverter._is_pandas_series(obj):
-            return str(obj.to_list())
-        elif TypeConverter._is_torch_tensor(obj):
+        
+        # JAX 数组
+        if TypeConverter._is_jax_array(obj):
             return str(obj.tolist())
-        elif TypeConverter._is_xarray_dataarray(obj):
-            return str(obj.values.tolist())
-        elif TypeConverter._is_xarray_dataset(obj):
-            return str({var: obj[var].values.tolist() for var in obj.data_vars})
-        elif TypeConverter._is_jax_array(obj):
-            return str(obj.tolist())
-        elif TypeConverter._is_tensorflow_tensor(obj):
+        
+        # TensorFlow 张量
+        if TypeConverter._is_tensorflow_tensor(obj):
             return str(obj.numpy().tolist())
-        else:
-            try:
-                return original_str(obj)
-            except (TypeError, ValueError):
-                raise TypeError(f"Cannot convert {type(obj).__name__} to str")
+        
+        # 其他类型
+        try:
+            return original_str(obj)
+        except (TypeError, ValueError):
+            raise TypeError(f"Cannot convert {type(obj).__name__} to str")
     
     @staticmethod
-    @conversion_cache
+    @conversion_cache()
     def to_int(obj):
         """转换为int
         
@@ -865,26 +1067,38 @@ class TypeConverter:
             TypeError: 如果无法转换为整数
             ValueError: 如果字符串无法转换为整数
         """
+        # 最常见的类型 - 快速路径
         if isinstance(obj, int):
             return obj
-        elif obj is None:
+        
+        # 空值处理
+        if obj is None:
             return 0
-        elif isinstance(obj, bool):
+        
+        # 基本类型
+        if isinstance(obj, bool):
             return int(obj)
-        elif isinstance(obj, float):
+        
+        if isinstance(obj, float):
             return int(obj)
-        elif isinstance(obj, str):
+        
+        # 字符串类型
+        if isinstance(obj, str):
             try:
                 return int(obj.strip())
             except ValueError:
                 raise ValueError(f"Cannot convert '{obj}' to int")
-        elif isinstance(obj, bytes):
+        
+        # 字节类型
+        if isinstance(obj, bytes):
             try:
                 return int(obj.decode('utf-8').strip())
             except (UnicodeDecodeError, ValueError):
                 raise ValueError(f"Cannot convert bytes to int")
-        elif isinstance(obj, (list, tuple, dict, set)):
-            if len(obj) == 0:
+        
+        # 容器类型
+        if isinstance(obj, (list, tuple, dict, set)):
+            if not obj:
                 return 0
             elif len(obj) == 1:
                 try:
@@ -895,62 +1109,73 @@ class TypeConverter:
                     raise TypeError(f"Cannot convert {type(obj).__name__} to int")
             else:
                 raise TypeError(f"Cannot convert {type(obj).__name__} with length > 1 to int")
-        elif TypeConverter._is_numpy_array(obj):
+        
+        # 第三方库类型 - 按使用频率排序
+        # NumPy 数组
+        if TypeConverter._is_numpy_array(obj):
             if obj.size == 1:
                 return int(obj.item())
-            else:
-                raise TypeError(f"Cannot convert numpy array with size > 1 to int")
-        elif TypeConverter._is_cupy_array(obj):
+            raise TypeError(f"Cannot convert numpy array with size > 1 to int")
+        
+        # PyTorch 张量
+        if TypeConverter._is_torch_tensor(obj):
+            if obj.numel() == 1:
+                return int(obj.item())
+            raise TypeError(f"Cannot convert torch Tensor with size > 1 to int")
+        
+        # Pandas 类型
+        if TypeConverter._is_pandas_series(obj):
+            if len(obj) == 1:
+                return int(obj.iloc[0])
+            raise TypeError(f"Cannot convert pandas Series with length > 1 to int")
+        
+        if TypeConverter._is_pandas_dataframe(obj):
+            if obj.size == 1:
+                return int(obj.iloc[0, 0])
+            raise TypeError(f"Cannot convert pandas DataFrame with size > 1 to int")
+        
+        # Xarray 类型
+        if TypeConverter._is_xarray_dataarray(obj):
+            if obj.size == 1:
+                return int(obj.item())
+            raise TypeError(f"Cannot convert xarray DataArray with size > 1 to int")
+        
+        if TypeConverter._is_xarray_dataset(obj):
+            raise TypeError(f"Cannot convert xarray Dataset to int")
+        
+        # CuPy 数组
+        if TypeConverter._is_cupy_array(obj):
             cupy = TypeConverter._get_cupy()
             if obj.size == 1:
                 return int(cupy.asnumpy(obj).item())
-            else:
-                raise TypeError(f"Cannot convert cupy array with size > 1 to int")
-        elif TypeConverter._is_scipy_sparse(obj):
+            raise TypeError(f"Cannot convert cupy array with size > 1 to int")
+        
+        # SciPy 稀疏矩阵
+        if TypeConverter._is_scipy_sparse(obj):
             if obj.size == 1:
                 return int(obj.toarray().item())
-            else:
-                raise TypeError(f"Cannot convert scipy sparse matrix with size > 1 to int")
-        elif TypeConverter._is_pandas_dataframe(obj):
-            if obj.size == 1:
-                return int(obj.iloc[0, 0])
-            else:
-                raise TypeError(f"Cannot convert pandas DataFrame with size > 1 to int")
-        elif TypeConverter._is_pandas_series(obj):
-            if len(obj) == 1:
-                return int(obj.iloc[0])
-            else:
-                raise TypeError(f"Cannot convert pandas Series with length > 1 to int")
-        elif TypeConverter._is_torch_tensor(obj):
-            if obj.numel() == 1:
-                return int(obj.item())
-            else:
-                raise TypeError(f"Cannot convert torch Tensor with size > 1 to int")
-        elif TypeConverter._is_xarray_dataarray(obj):
+            raise TypeError(f"Cannot convert scipy sparse matrix with size > 1 to int")
+        
+        # JAX 数组
+        if TypeConverter._is_jax_array(obj):
             if obj.size == 1:
                 return int(obj.item())
-            else:
-                raise TypeError(f"Cannot convert xarray DataArray with size > 1 to int")
-        elif TypeConverter._is_xarray_dataset(obj):
-            raise TypeError(f"Cannot convert xarray Dataset to int")
-        elif TypeConverter._is_jax_array(obj):
-            if obj.size == 1:
-                return int(obj.item())
-            else:
-                raise TypeError(f"Cannot convert jax array with size > 1 to int")
-        elif TypeConverter._is_tensorflow_tensor(obj):
+            raise TypeError(f"Cannot convert jax array with size > 1 to int")
+        
+        # TensorFlow 张量
+        if TypeConverter._is_tensorflow_tensor(obj):
             if obj.shape == ():
                 return int(obj.numpy())
-            else:
-                raise TypeError(f"Cannot convert tensorflow Tensor with size > 1 to int")
-        else:
-            try:
-                return original_int(obj)
-            except (TypeError, ValueError):
-                raise TypeError(f"Cannot convert {type(obj).__name__} to int")
+            raise TypeError(f"Cannot convert tensorflow Tensor with size > 1 to int")
+        
+        # 其他类型
+        try:
+            return original_int(obj)
+        except (TypeError, ValueError):
+            raise TypeError(f"Cannot convert {type(obj).__name__} to int")
     
     @staticmethod
-    @conversion_cache
+    @conversion_cache()
     def to_float(obj):
         """转换为float
         
@@ -966,26 +1191,35 @@ class TypeConverter:
             TypeError: 如果无法转换为浮点数
             ValueError: 如果字符串无法转换为浮点数
         """
+        # 最常见的类型 - 快速路径
         if isinstance(obj, float):
             return obj
-        elif obj is None:
+        
+        # 空值处理
+        if obj is None:
             return 0.0
-        elif isinstance(obj, bool):
+        
+        # 基本类型
+        if isinstance(obj, (int, bool)):
             return float(obj)
-        elif isinstance(obj, int):
-            return float(obj)
-        elif isinstance(obj, str):
+        
+        # 字符串类型
+        if isinstance(obj, str):
             try:
                 return float(obj.strip())
             except ValueError:
                 raise ValueError(f"Cannot convert '{obj}' to float")
-        elif isinstance(obj, bytes):
+        
+        # 字节类型
+        if isinstance(obj, bytes):
             try:
                 return float(obj.decode('utf-8').strip())
             except (UnicodeDecodeError, ValueError):
                 raise ValueError(f"Cannot convert bytes to float")
-        elif isinstance(obj, (list, tuple, dict, set)):
-            if len(obj) == 0:
+        
+        # 容器类型
+        if isinstance(obj, (list, tuple, dict, set)):
+            if not obj:
                 return 0.0
             elif len(obj) == 1:
                 try:
@@ -996,62 +1230,73 @@ class TypeConverter:
                     raise TypeError(f"Cannot convert {type(obj).__name__} to float")
             else:
                 raise TypeError(f"Cannot convert {type(obj).__name__} with length > 1 to float")
-        elif TypeConverter._is_numpy_array(obj):
+        
+        # 第三方库类型 - 按使用频率排序
+        # NumPy 数组
+        if TypeConverter._is_numpy_array(obj):
             if obj.size == 1:
                 return float(obj.item())
-            else:
-                raise TypeError(f"Cannot convert numpy array with size > 1 to float")
-        elif TypeConverter._is_cupy_array(obj):
+            raise TypeError(f"Cannot convert numpy array with size > 1 to float")
+        
+        # PyTorch 张量
+        if TypeConverter._is_torch_tensor(obj):
+            if obj.numel() == 1:
+                return float(obj.item())
+            raise TypeError(f"Cannot convert torch Tensor with size > 1 to float")
+        
+        # Pandas 类型
+        if TypeConverter._is_pandas_series(obj):
+            if len(obj) == 1:
+                return float(obj.iloc[0])
+            raise TypeError(f"Cannot convert pandas Series with length > 1 to float")
+        
+        if TypeConverter._is_pandas_dataframe(obj):
+            if obj.size == 1:
+                return float(obj.iloc[0, 0])
+            raise TypeError(f"Cannot convert pandas DataFrame with size > 1 to float")
+        
+        # Xarray 类型
+        if TypeConverter._is_xarray_dataarray(obj):
+            if obj.size == 1:
+                return float(obj.item())
+            raise TypeError(f"Cannot convert xarray DataArray with size > 1 to float")
+        
+        if TypeConverter._is_xarray_dataset(obj):
+            raise TypeError(f"Cannot convert xarray Dataset to float")
+        
+        # CuPy 数组
+        if TypeConverter._is_cupy_array(obj):
             cupy = TypeConverter._get_cupy()
             if obj.size == 1:
                 return float(cupy.asnumpy(obj).item())
-            else:
-                raise TypeError(f"Cannot convert cupy array with size > 1 to float")
-        elif TypeConverter._is_scipy_sparse(obj):
+            raise TypeError(f"Cannot convert cupy array with size > 1 to float")
+        
+        # SciPy 稀疏矩阵
+        if TypeConverter._is_scipy_sparse(obj):
             if obj.size == 1:
                 return float(obj.toarray().item())
-            else:
-                raise TypeError(f"Cannot convert scipy sparse matrix with size > 1 to float")
-        elif TypeConverter._is_pandas_dataframe(obj):
-            if obj.size == 1:
-                return float(obj.iloc[0, 0])
-            else:
-                raise TypeError(f"Cannot convert pandas DataFrame with size > 1 to float")
-        elif TypeConverter._is_pandas_series(obj):
-            if len(obj) == 1:
-                return float(obj.iloc[0])
-            else:
-                raise TypeError(f"Cannot convert pandas Series with length > 1 to float")
-        elif TypeConverter._is_torch_tensor(obj):
-            if obj.numel() == 1:
-                return float(obj.item())
-            else:
-                raise TypeError(f"Cannot convert torch Tensor with size > 1 to float")
-        elif TypeConverter._is_xarray_dataarray(obj):
+            raise TypeError(f"Cannot convert scipy sparse matrix with size > 1 to float")
+        
+        # JAX 数组
+        if TypeConverter._is_jax_array(obj):
             if obj.size == 1:
                 return float(obj.item())
-            else:
-                raise TypeError(f"Cannot convert xarray DataArray with size > 1 to float")
-        elif TypeConverter._is_xarray_dataset(obj):
-            raise TypeError(f"Cannot convert xarray Dataset to float")
-        elif TypeConverter._is_jax_array(obj):
-            if obj.size == 1:
-                return float(obj.item())
-            else:
-                raise TypeError(f"Cannot convert jax array with size > 1 to float")
-        elif TypeConverter._is_tensorflow_tensor(obj):
+            raise TypeError(f"Cannot convert jax array with size > 1 to float")
+        
+        # TensorFlow 张量
+        if TypeConverter._is_tensorflow_tensor(obj):
             if obj.shape == ():
                 return float(obj.numpy())
-            else:
-                raise TypeError(f"Cannot convert tensorflow Tensor with size > 1 to float")
-        else:
-            try:
-                return original_float(obj)
-            except (TypeError, ValueError):
-                raise TypeError(f"Cannot convert {type(obj).__name__} to float")
+            raise TypeError(f"Cannot convert tensorflow Tensor with size > 1 to float")
+        
+        # 其他类型
+        try:
+            return original_float(obj)
+        except (TypeError, ValueError):
+            raise TypeError(f"Cannot convert {type(obj).__name__} to float")
     
     @staticmethod
-    @conversion_cache
+    @conversion_cache()
     def to_dict(obj):
         """转换为dict
         
@@ -1066,45 +1311,48 @@ class TypeConverter:
         Raises:
             TypeError: 如果无法转换为字典
         """
+        # 最常见的类型 - 快速路径
         if isinstance(obj, dict):
             return obj
-        elif obj is None:
+        
+        # 空值处理
+        if obj is None:
             return {}
-        elif isinstance(obj, (list, tuple)):
+        
+        # 基本类型
+        if isinstance(obj, (str, int, float, bool, set)):
+            return {"value": obj}
+        
+        # 容器类型
+        if isinstance(obj, (list, tuple)):
             try:
                 return dict(obj)
             except (ValueError, TypeError):
                 # 如果是简单列表，转换为索引字典
                 return {i: v for i, v in enumerate(obj)}
-        elif isinstance(obj, (str, int, float, bool, set)):
-            return {"value": obj}
-        elif TypeConverter._is_numpy_array(obj):
+        
+        # 第三方库类型 - 按使用频率排序
+        # NumPy 数组
+        if TypeConverter._is_numpy_array(obj):
             if obj.ndim == 1:
                 return {i: v for i, v in enumerate(obj.tolist())}
-            else:
-                return {"shape": obj.shape, "dtype": str(obj.dtype), "data": obj.tolist()}
-        elif TypeConverter._is_cupy_array(obj):
-            cupy = TypeConverter._get_cupy()
-            if obj.ndim == 1:
-                return {i: v for i, v in enumerate(cupy.asnumpy(obj).tolist())}
-            else:
-                return {"shape": obj.shape, "dtype": str(obj.dtype), "data": cupy.asnumpy(obj).tolist()}
-        elif TypeConverter._is_scipy_sparse(obj):
-            array = obj.toarray()
-            if array.ndim == 1:
-                return {i: v for i, v in enumerate(array.tolist())}
-            else:
-                return {"shape": array.shape, "dtype": str(array.dtype), "data": array.tolist()}
-        elif TypeConverter._is_pandas_dataframe(obj):
-            return obj.to_dict('list')
-        elif TypeConverter._is_pandas_series(obj):
+            return {"shape": obj.shape, "dtype": str(obj.dtype), "data": obj.tolist()}
+        
+        # Pandas 类型
+        if TypeConverter._is_pandas_series(obj):
             return obj.to_dict()
-        elif TypeConverter._is_torch_tensor(obj):
+        
+        if TypeConverter._is_pandas_dataframe(obj):
+            return obj.to_dict('list')
+        
+        # PyTorch 张量
+        if TypeConverter._is_torch_tensor(obj):
             if obj.ndim == 1:
                 return {i: v for i, v in enumerate(obj.tolist())}
-            else:
-                return {"shape": tuple(obj.shape), "data": obj.tolist()}
-        elif TypeConverter._is_xarray_dataarray(obj):
+            return {"shape": tuple(obj.shape), "data": obj.tolist()}
+        
+        # Xarray 类型
+        if TypeConverter._is_xarray_dataarray(obj):
             return {
                 "shape": obj.shape,
                 "dtype": str(obj.dtype),
@@ -1112,7 +1360,8 @@ class TypeConverter:
                 "dims": obj.dims,
                 "coords": {dim: obj.coords[dim].values.tolist() for dim in obj.dims}
             }
-        elif TypeConverter._is_xarray_dataset(obj):
+        
+        if TypeConverter._is_xarray_dataset(obj):
             return {
                 var: {
                     "shape": obj[var].shape,
@@ -1121,24 +1370,41 @@ class TypeConverter:
                 }
                 for var in obj.data_vars
             }
-        elif TypeConverter._is_jax_array(obj):
+        
+        # CuPy 数组
+        if TypeConverter._is_cupy_array(obj):
+            cupy = TypeConverter._get_cupy()
+            if obj.ndim == 1:
+                return {i: v for i, v in enumerate(cupy.asnumpy(obj).tolist())}
+            return {"shape": obj.shape, "dtype": str(obj.dtype), "data": cupy.asnumpy(obj).tolist()}
+        
+        # SciPy 稀疏矩阵
+        if TypeConverter._is_scipy_sparse(obj):
+            array = obj.toarray()
+            if array.ndim == 1:
+                return {i: v for i, v in enumerate(array.tolist())}
+            return {"shape": array.shape, "dtype": str(array.dtype), "data": array.tolist()}
+        
+        # JAX 数组
+        if TypeConverter._is_jax_array(obj):
             if obj.ndim == 1:
                 return {i: v for i, v in enumerate(obj.tolist())}
-            else:
-                return {"shape": obj.shape, "dtype": str(obj.dtype), "data": obj.tolist()}
-        elif TypeConverter._is_tensorflow_tensor(obj):
+            return {"shape": obj.shape, "dtype": str(obj.dtype), "data": obj.tolist()}
+        
+        # TensorFlow 张量
+        if TypeConverter._is_tensorflow_tensor(obj):
             if len(obj.shape) == 1:
                 return {i: v for i, v in enumerate(obj.numpy().tolist())}
-            else:
-                return {"shape": tuple(obj.shape), "data": obj.numpy().tolist()}
-        else:
-            try:
-                return original_dict(obj)
-            except (TypeError, ValueError):
-                raise TypeError(f"Cannot convert {type(obj).__name__} to dict")
+            return {"shape": tuple(obj.shape), "data": obj.numpy().tolist()}
+        
+        # 其他类型
+        try:
+            return original_dict(obj)
+        except (TypeError, ValueError):
+            raise TypeError(f"Cannot convert {type(obj).__name__} to dict")
     
     @staticmethod
-    @conversion_cache
+    @conversion_cache()
     def to_set(obj):
         """转换为set
         
@@ -1153,67 +1419,89 @@ class TypeConverter:
         Raises:
             TypeError: 如果无法转换为集合
         """
+        # 最常见的类型 - 快速路径
         if isinstance(obj, set):
             return obj
-        elif obj is None:
+        
+        # 空值处理
+        if obj is None:
             return set()
-        elif isinstance(obj, (str, bytes)):
-            return set(obj)
-        elif isinstance(obj, (int, float, bool)):
+        
+        # 基本类型
+        if isinstance(obj, (int, float, bool)):
             return {obj}
-        elif isinstance(obj, (list, tuple, dict)):
+        
+        # 字符串和字节
+        if isinstance(obj, (str, bytes)):
             return set(obj)
-        elif TypeConverter._is_numpy_array(obj):
+        
+        # 容器类型
+        if isinstance(obj, (list, tuple, dict)):
+            return set(obj)
+        
+        # 第三方库类型 - 按使用频率排序
+        # NumPy 数组
+        if TypeConverter._is_numpy_array(obj):
             if obj.ndim == 1:
                 return set(obj.tolist())
-            else:
-                raise TypeError(f"Cannot convert multi-dimensional numpy array to set")
-        elif TypeConverter._is_cupy_array(obj):
+            raise TypeError(f"Cannot convert multi-dimensional numpy array to set")
+        
+        # Pandas 类型
+        if TypeConverter._is_pandas_series(obj):
+            return set(obj.tolist())
+        
+        if TypeConverter._is_pandas_dataframe(obj):
+            raise TypeError(f"Cannot convert pandas DataFrame to set")
+        
+        # PyTorch 张量
+        if TypeConverter._is_torch_tensor(obj):
+            if obj.ndim == 1:
+                return set(obj.tolist())
+            raise TypeError(f"Cannot convert multi-dimensional torch Tensor to set")
+        
+        # Xarray 类型
+        if TypeConverter._is_xarray_dataarray(obj):
+            if obj.ndim == 1:
+                return set(obj.values.tolist())
+            raise TypeError(f"Cannot convert multi-dimensional xarray DataArray to set")
+        
+        if TypeConverter._is_xarray_dataset(obj):
+            raise TypeError(f"Cannot convert xarray Dataset to set")
+        
+        # CuPy 数组
+        if TypeConverter._is_cupy_array(obj):
             cupy = TypeConverter._get_cupy()
             if obj.ndim == 1:
                 return set(cupy.asnumpy(obj).tolist())
-            else:
-                raise TypeError(f"Cannot convert multi-dimensional cupy array to set")
-        elif TypeConverter._is_scipy_sparse(obj):
+            raise TypeError(f"Cannot convert multi-dimensional cupy array to set")
+        
+        # SciPy 稀疏矩阵
+        if TypeConverter._is_scipy_sparse(obj):
             array = obj.toarray()
             if array.ndim == 1:
                 return set(array.tolist())
-            else:
-                raise TypeError(f"Cannot convert multi-dimensional scipy sparse matrix to set")
-        elif TypeConverter._is_pandas_dataframe(obj):
-            raise TypeError(f"Cannot convert pandas DataFrame to set")
-        elif TypeConverter._is_pandas_series(obj):
-            return set(obj.tolist())
-        elif TypeConverter._is_torch_tensor(obj):
+            raise TypeError(f"Cannot convert multi-dimensional scipy sparse matrix to set")
+        
+        # JAX 数组
+        if TypeConverter._is_jax_array(obj):
             if obj.ndim == 1:
                 return set(obj.tolist())
-            else:
-                raise TypeError(f"Cannot convert multi-dimensional torch Tensor to set")
-        elif TypeConverter._is_xarray_dataarray(obj):
-            if obj.ndim == 1:
-                return set(obj.values.tolist())
-            else:
-                raise TypeError(f"Cannot convert multi-dimensional xarray DataArray to set")
-        elif TypeConverter._is_xarray_dataset(obj):
-            raise TypeError(f"Cannot convert xarray Dataset to set")
-        elif TypeConverter._is_jax_array(obj):
-            if obj.ndim == 1:
-                return set(obj.tolist())
-            else:
-                raise TypeError(f"Cannot convert multi-dimensional jax array to set")
-        elif TypeConverter._is_tensorflow_tensor(obj):
+            raise TypeError(f"Cannot convert multi-dimensional jax array to set")
+        
+        # TensorFlow 张量
+        if TypeConverter._is_tensorflow_tensor(obj):
             if len(obj.shape) == 1:
                 return set(obj.numpy().tolist())
-            else:
-                raise TypeError(f"Cannot convert multi-dimensional tensorflow Tensor to set")
-        else:
-            try:
-                return original_set(obj)
-            except (TypeError, ValueError):
-                raise TypeError(f"Cannot convert {type(obj).__name__} to set")
+            raise TypeError(f"Cannot convert multi-dimensional tensorflow Tensor to set")
+        
+        # 其他类型
+        try:
+            return original_set(obj)
+        except (TypeError, ValueError):
+            raise TypeError(f"Cannot convert {type(obj).__name__} to set")
     
     @staticmethod
-    @conversion_cache
+    @conversion_cache()
     def to_tuple(obj):
         """转换为tuple
         
@@ -1228,82 +1516,103 @@ class TypeConverter:
         Raises:
             TypeError: 如果无法转换为元组
         """
+        # 最常见的类型 - 快速路径
         if isinstance(obj, tuple):
             return obj
-        elif obj is None:
+        
+        # 空值处理
+        if obj is None:
             return ()
-        elif isinstance(obj, (str, bytes)):
-            return tuple(obj)
-        elif isinstance(obj, (int, float, bool)):
+        
+        # 基本类型
+        if isinstance(obj, (int, float, bool)):
             return (obj,)
-        elif isinstance(obj, (list, set, dict)):
+        
+        # 字符串和字节
+        if isinstance(obj, (str, bytes)):
             return tuple(obj)
-        elif TypeConverter._is_numpy_array(obj):
+        
+        # 容器类型
+        if isinstance(obj, (list, set, dict)):
+            return tuple(obj)
+        
+        # 第三方库类型 - 按使用频率排序
+        # NumPy 数组
+        if TypeConverter._is_numpy_array(obj):
             if obj.ndim == 1:
                 return tuple(obj.tolist())
-            else:
-                return tuple(map(tuple, obj.tolist()))
-        elif TypeConverter._is_cupy_array(obj):
+            return tuple(map(tuple, obj.tolist()))
+        
+        # Pandas 类型
+        if TypeConverter._is_pandas_series(obj):
+            return tuple(obj.tolist())
+        
+        if TypeConverter._is_pandas_dataframe(obj):
+            return (tuple(obj.columns.tolist()),) + tuple(tuple(row) for row in obj.values.tolist())
+        
+        # PyTorch 张量
+        if TypeConverter._is_torch_tensor(obj):
+            if obj.ndim == 1:
+                return tuple(obj.tolist())
+            return tuple(map(tuple, obj.tolist()))
+        
+        # Xarray 类型
+        if TypeConverter._is_xarray_dataarray(obj):
+            if obj.ndim == 1:
+                return tuple(obj.values.tolist())
+            return tuple(map(tuple, obj.values.tolist()))
+        
+        if TypeConverter._is_xarray_dataset(obj):
+            return (tuple({var: obj[var].values.tolist() for var in obj.data_vars}),)
+        
+        # CuPy 数组
+        if TypeConverter._is_cupy_array(obj):
             cupy = TypeConverter._get_cupy()
             if obj.ndim == 1:
                 return tuple(cupy.asnumpy(obj).tolist())
-            else:
-                return tuple(map(tuple, cupy.asnumpy(obj).tolist()))
-        elif TypeConverter._is_scipy_sparse(obj):
+            return tuple(map(tuple, cupy.asnumpy(obj).tolist()))
+        
+        # SciPy 稀疏矩阵
+        if TypeConverter._is_scipy_sparse(obj):
             array = obj.toarray()
             if array.ndim == 1:
                 return tuple(array.tolist())
-            else:
-                return tuple(map(tuple, array.tolist()))
-        elif TypeConverter._is_pandas_dataframe(obj):
-            # 转换为包含列名和数据的嵌套元组
-            return (tuple(obj.columns.tolist()),) + tuple(tuple(row) for row in obj.values.tolist())
-        elif TypeConverter._is_pandas_series(obj):
-            return tuple(obj.tolist())
-        elif TypeConverter._is_torch_tensor(obj):
+            return tuple(map(tuple, array.tolist()))
+        
+        # JAX 数组
+        if TypeConverter._is_jax_array(obj):
             if obj.ndim == 1:
                 return tuple(obj.tolist())
-            else:
-                return tuple(map(tuple, obj.tolist()))
-        elif TypeConverter._is_xarray_dataarray(obj):
-            if obj.ndim == 1:
-                return tuple(obj.values.tolist())
-            else:
-                return tuple(map(tuple, obj.values.tolist()))
-        elif TypeConverter._is_xarray_dataset(obj):
-            # 转换为包含所有变量的字典元组
-            return (tuple({var: obj[var].values.tolist() for var in obj.data_vars}),)
-        elif TypeConverter._is_jax_array(obj):
-            if obj.ndim == 1:
-                return tuple(obj.tolist())
-            else:
-                return tuple(map(tuple, obj.tolist()))
-        elif TypeConverter._is_tensorflow_tensor(obj):
+            return tuple(map(tuple, obj.tolist()))
+        
+        # TensorFlow 张量
+        if TypeConverter._is_tensorflow_tensor(obj):
             if len(obj.shape) == 1:
                 return tuple(obj.numpy().tolist())
-            else:
-                return tuple(map(tuple, obj.numpy().tolist()))
-        else:
-            try:
-                return original_tuple(obj)
-            except (TypeError, ValueError):
-                raise TypeError(f"Cannot convert {type(obj).__name__} to tuple")
+            return tuple(map(tuple, obj.numpy().tolist()))
+        
+        # 其他类型
+        try:
+            return original_tuple(obj)
+        except (TypeError, ValueError):
+            raise TypeError(f"Cannot convert {type(obj).__name__} to tuple")
 
 # 重写内置转换函数
-def e2e_list(obj=None):
+def e2e_list(obj=None, batch_size=None):
     """转换为list
     
     Convert object to list, with support for all standard types and third-party library types.
     
     Args:
         obj: 要转换的对象，默认为None
+        batch_size: 批处理大小，用于大型数据集
         
     Returns:
         list: 转换后的列表
     """
     if obj is None:
         return []
-    return TypeConverter.to_list(obj)
+    return TypeConverter.to_list(obj, batch_size=batch_size)
 
 def e2e_str(obj=""):
     """转换为str
