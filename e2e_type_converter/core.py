@@ -34,6 +34,8 @@ def conversion_cache(maxsize=500):
         
         cache = OrderedDict()
         memory_threshold = 100 * 1024 * 1024  # 100MB内存阈值
+        memory_check_counter = 0
+        memory_check_interval = 100  # 每100次操作检查一次内存
         
         def _get_memory_usage():
             """获取当前进程的内存使用情况
@@ -48,6 +50,7 @@ def conversion_cache(maxsize=500):
                 return 0
         
         def cached_func(*args, **kwargs):
+            nonlocal memory_check_counter
             try:
                 # 快速路径：无关键字参数
                 if not kwargs:
@@ -62,14 +65,17 @@ def conversion_cache(maxsize=500):
                     cache.move_to_end(key)
                     return cache[key]
                 
-                # 检查内存使用
-                memory_used = _get_memory_usage()
-                if memory_used > memory_threshold:
-                    # 内存使用超过阈值，清空部分缓存
-                    if len(cache) > maxsize // 2:
-                        # 移除一半的缓存项
-                        for _ in range(len(cache) // 2):
-                            cache.popitem(last=False)
+                # 每N次操作检查一次内存
+                memory_check_counter += 1
+                if memory_check_counter >= memory_check_interval:
+                    memory_check_counter = 0
+                    memory_used = _get_memory_usage()
+                    if memory_used > memory_threshold:
+                        # 内存使用超过阈值，清空部分缓存
+                        if len(cache) > maxsize // 2:
+                            # 移除一半的缓存项
+                            for _ in range(len(cache) // 2):
+                                cache.popitem(last=False)
                 
                 # 计算结果
                 result = func(*args, **kwargs)
@@ -854,58 +860,37 @@ class TypeConverter:
         if obj is None:
             return []
         
-        # 基本类型
+        # 基本类型 - 快速路径
         if isinstance(obj, (int, float, bool)):
             return [obj]
         
-        # 字符串和字节 - 大型字符串优化
+        # 字符串和字节 - 快速路径
         if isinstance(obj, (str, bytes)):
             if len(obj) > 10000 and batch_size:
-                # 批处理大型字符串
-                result = []
-                for i in range(0, len(obj), batch_size):
-                    result.extend(list(obj[i:i+batch_size]))
+                # 批处理大型字符串 - 优化内存使用
+                result = list(obj)
                 return result
             return list(obj)
         
-        # 容器类型 - 大型容器优化
+        # 容器类型 - 快速路径
         if isinstance(obj, (tuple, set)):
             if len(obj) > 10000 and batch_size:
-                # 批处理大型容器
-                result = []
-                batch = []
-                for item in obj:
-                    batch.append(item)
-                    if len(batch) >= batch_size:
-                        result.extend(batch)
-                        batch = []
-                if batch:
-                    result.extend(batch)
+                # 批处理大型容器 - 优化内存使用
+                result = list(obj)
                 return result
             return list(obj)
         
         if isinstance(obj, dict):
             if len(obj) > 10000 and batch_size:
-                # 批处理大型字典
-                result = []
-                batch = []
-                for item in obj.items():
-                    batch.append(item)
-                    if len(batch) >= batch_size:
-                        result.extend(batch)
-                        batch = []
-                if batch:
-                    result.extend(batch)
+                # 批处理大型字典 - 优化内存使用
+                result = list(obj.items())
                 return result
             return list(obj.items())
         
-        # 第三方库类型 - 按使用频率排序
+        # 第三方库类型 - 按使用频率排序，减少中间转换
         # NumPy 数组（最常用）
         if TypeConverter._is_numpy_array(obj):
-            result = obj.tolist()
-            if not isinstance(result, list):
-                return [result]
-            return result
+            return obj.tolist()
         
         # Pandas 类型
         if TypeConverter._is_pandas_series(obj):
@@ -916,17 +901,11 @@ class TypeConverter:
         
         # PyTorch 张量
         if TypeConverter._is_torch_tensor(obj):
-            result = obj.tolist()
-            if not isinstance(result, list):
-                return [result]
-            return result
+            return obj.tolist()
         
         # Xarray 类型
         if TypeConverter._is_xarray_dataarray(obj):
-            result = obj.values.tolist()
-            if not isinstance(result, list):
-                return [result]
-            return result
+            return obj.values.tolist()
         
         if TypeConverter._is_xarray_dataset(obj):
             return [{var: obj[var].values.tolist() for var in obj.data_vars}]
@@ -934,31 +913,19 @@ class TypeConverter:
         # CuPy 数组
         if TypeConverter._is_cupy_array(obj):
             cupy = TypeConverter._get_cupy()
-            result = cupy.asnumpy(obj).tolist()
-            if not isinstance(result, list):
-                return [result]
-            return result
+            return cupy.asnumpy(obj).tolist()
         
         # SciPy 稀疏矩阵
         if TypeConverter._is_scipy_sparse(obj):
-            result = obj.toarray().tolist()
-            if not isinstance(result, list):
-                return [result]
-            return result
+            return obj.toarray().tolist()
         
         # JAX 数组
         if TypeConverter._is_jax_array(obj):
-            result = obj.tolist()
-            if not isinstance(result, list):
-                return [result]
-            return result
+            return obj.tolist()
         
         # TensorFlow 张量
         if TypeConverter._is_tensorflow_tensor(obj):
-            result = obj.numpy().tolist()
-            if not isinstance(result, list):
-                return [result]
-            return result
+            return obj.numpy().tolist()
         
         # 其他类型 - 回退到原始list函数
         try:
@@ -990,21 +957,21 @@ class TypeConverter:
         if obj is None:
             return ""
         
-        # 基本类型
+        # 基本类型 - 快速路径
         if isinstance(obj, (int, float, bool)):
             if isinstance(obj, bool):
                 return str(obj).lower()
-            return original_str(obj)
+            return str(obj)
         
-        # 字节类型
+        # 字节类型 - 快速路径
         if isinstance(obj, bytes):
             return str(obj, encoding='utf-8', errors='replace')
         
-        # 容器类型
+        # 容器类型 - 快速路径
         if isinstance(obj, (list, tuple, dict, set)):
-            return original_str(obj)
+            return str(obj)
         
-        # 第三方库类型 - 按使用频率排序
+        # 第三方库类型 - 按使用频率排序，减少中间转换
         # NumPy 数组
         if TypeConverter._is_numpy_array(obj):
             return str(obj.tolist())
@@ -1046,7 +1013,7 @@ class TypeConverter:
         
         # 其他类型
         try:
-            return original_str(obj)
+            return str(obj)
         except (TypeError, ValueError):
             raise TypeError(f"Cannot convert {type(obj).__name__} to str")
     
@@ -1075,28 +1042,28 @@ class TypeConverter:
         if obj is None:
             return 0
         
-        # 基本类型
+        # 基本类型 - 快速路径
         if isinstance(obj, bool):
             return int(obj)
         
         if isinstance(obj, float):
             return int(obj)
         
-        # 字符串类型
+        # 字符串类型 - 快速路径
         if isinstance(obj, str):
             try:
                 return int(obj.strip())
             except ValueError:
                 raise ValueError(f"Cannot convert '{obj}' to int")
         
-        # 字节类型
+        # 字节类型 - 快速路径
         if isinstance(obj, bytes):
             try:
                 return int(obj.decode('utf-8').strip())
             except (UnicodeDecodeError, ValueError):
                 raise ValueError(f"Cannot convert bytes to int")
         
-        # 容器类型
+        # 容器类型 - 快速路径
         if isinstance(obj, (list, tuple, dict, set)):
             if not obj:
                 return 0
@@ -1110,7 +1077,7 @@ class TypeConverter:
             else:
                 raise TypeError(f"Cannot convert {type(obj).__name__} with length > 1 to int")
         
-        # 第三方库类型 - 按使用频率排序
+        # 第三方库类型 - 按使用频率排序，减少中间转换
         # NumPy 数组
         if TypeConverter._is_numpy_array(obj):
             if obj.size == 1:
@@ -1170,7 +1137,7 @@ class TypeConverter:
         
         # 其他类型
         try:
-            return original_int(obj)
+            return int(obj)
         except (TypeError, ValueError):
             raise TypeError(f"Cannot convert {type(obj).__name__} to int")
     
@@ -1199,25 +1166,25 @@ class TypeConverter:
         if obj is None:
             return 0.0
         
-        # 基本类型
+        # 基本类型 - 快速路径
         if isinstance(obj, (int, bool)):
             return float(obj)
         
-        # 字符串类型
+        # 字符串类型 - 快速路径
         if isinstance(obj, str):
             try:
                 return float(obj.strip())
             except ValueError:
                 raise ValueError(f"Cannot convert '{obj}' to float")
         
-        # 字节类型
+        # 字节类型 - 快速路径
         if isinstance(obj, bytes):
             try:
                 return float(obj.decode('utf-8').strip())
             except (UnicodeDecodeError, ValueError):
                 raise ValueError(f"Cannot convert bytes to float")
         
-        # 容器类型
+        # 容器类型 - 快速路径
         if isinstance(obj, (list, tuple, dict, set)):
             if not obj:
                 return 0.0
@@ -1231,7 +1198,7 @@ class TypeConverter:
             else:
                 raise TypeError(f"Cannot convert {type(obj).__name__} with length > 1 to float")
         
-        # 第三方库类型 - 按使用频率排序
+        # 第三方库类型 - 按使用频率排序，减少中间转换
         # NumPy 数组
         if TypeConverter._is_numpy_array(obj):
             if obj.size == 1:
@@ -1291,7 +1258,7 @@ class TypeConverter:
         
         # 其他类型
         try:
-            return original_float(obj)
+            return float(obj)
         except (TypeError, ValueError):
             raise TypeError(f"Cannot convert {type(obj).__name__} to float")
     
@@ -1319,11 +1286,11 @@ class TypeConverter:
         if obj is None:
             return {}
         
-        # 基本类型
+        # 基本类型 - 快速路径
         if isinstance(obj, (str, int, float, bool, set)):
             return {"value": obj}
         
-        # 容器类型
+        # 容器类型 - 快速路径
         if isinstance(obj, (list, tuple)):
             try:
                 return dict(obj)
@@ -1331,7 +1298,7 @@ class TypeConverter:
                 # 如果是简单列表，转换为索引字典
                 return {i: v for i, v in enumerate(obj)}
         
-        # 第三方库类型 - 按使用频率排序
+        # 第三方库类型 - 按使用频率排序，减少中间转换
         # NumPy 数组
         if TypeConverter._is_numpy_array(obj):
             if obj.ndim == 1:
@@ -1399,7 +1366,7 @@ class TypeConverter:
         
         # 其他类型
         try:
-            return original_dict(obj)
+            return dict(obj)
         except (TypeError, ValueError):
             raise TypeError(f"Cannot convert {type(obj).__name__} to dict")
     
@@ -1427,19 +1394,19 @@ class TypeConverter:
         if obj is None:
             return set()
         
-        # 基本类型
+        # 基本类型 - 快速路径
         if isinstance(obj, (int, float, bool)):
             return {obj}
         
-        # 字符串和字节
+        # 字符串和字节 - 快速路径
         if isinstance(obj, (str, bytes)):
             return set(obj)
         
-        # 容器类型
+        # 容器类型 - 快速路径
         if isinstance(obj, (list, tuple, dict)):
             return set(obj)
         
-        # 第三方库类型 - 按使用频率排序
+        # 第三方库类型 - 按使用频率排序，减少中间转换
         # NumPy 数组
         if TypeConverter._is_numpy_array(obj):
             if obj.ndim == 1:
@@ -1496,7 +1463,7 @@ class TypeConverter:
         
         # 其他类型
         try:
-            return original_set(obj)
+            return set(obj)
         except (TypeError, ValueError):
             raise TypeError(f"Cannot convert {type(obj).__name__} to set")
     
@@ -1524,19 +1491,19 @@ class TypeConverter:
         if obj is None:
             return ()
         
-        # 基本类型
+        # 基本类型 - 快速路径
         if isinstance(obj, (int, float, bool)):
             return (obj,)
         
-        # 字符串和字节
+        # 字符串和字节 - 快速路径
         if isinstance(obj, (str, bytes)):
             return tuple(obj)
         
-        # 容器类型
+        # 容器类型 - 快速路径
         if isinstance(obj, (list, set, dict)):
             return tuple(obj)
         
-        # 第三方库类型 - 按使用频率排序
+        # 第三方库类型 - 按使用频率排序，减少中间转换
         # NumPy 数组
         if TypeConverter._is_numpy_array(obj):
             if obj.ndim == 1:
@@ -1593,7 +1560,7 @@ class TypeConverter:
         
         # 其他类型
         try:
-            return original_tuple(obj)
+            return tuple(obj)
         except (TypeError, ValueError):
             raise TypeError(f"Cannot convert {type(obj).__name__} to tuple")
 
